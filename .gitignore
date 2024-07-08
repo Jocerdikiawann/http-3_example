@@ -1,2 +1,4 @@
 /target
 Cargo.lock
+/src/bin/cert.crt
+/src/bin/cert.key

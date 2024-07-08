@@ -17,7 +17,7 @@ pub type ClientMap = HashMap<ClientId, Client>;
 
 fn main() {
     let mut buf = [0; MAX_BUF_SIZE];
-    let mut out = [0; MAX_DATAGRAM_SIZE];
+    let mut out = [0; MAX_BUF_SIZE];
     let mut pacing = false;
 
     let mut poll = mio::Poll::new().unwrap();
@@ -46,8 +46,16 @@ fn main() {
 
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
 
-    config.load_cert_chain_from_pem_file("cert.crt").unwrap();
-    config.load_priv_key_from_pem_file("cert.key").unwrap();
+    config
+        .load_cert_chain_from_pem_file(
+            "/home/cexup/Documents/Work/rust/learn_h3_rust/src/bin/cert.crt",
+        )
+        .unwrap();
+    config
+        .load_priv_key_from_pem_file(
+            "/home/cexup/Documents/Work/rust/learn_h3_rust/src/bin/cert.key",
+        )
+        .unwrap();
     config
         .set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
         .unwrap();
@@ -63,6 +71,7 @@ fn main() {
     config.set_initial_max_streams_uni(100);
     config.set_disable_active_migration(true);
     config.set_active_connection_id_limit(2);
+    config.set_initial_congestion_window_packets(usize::try_from(10).unwrap());
 
     config.set_max_connection_window(16777216);
     config.set_max_stream_window(25165824);
@@ -346,6 +355,10 @@ fn main() {
                     continue_write = true;
                     break;
                 }
+            }
+
+            if total_write == 0 || dst_info.is_none() {
+                break;
             }
 
             if let Err(e) = send_to(

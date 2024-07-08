@@ -21,7 +21,7 @@ pub fn connect(output_sink: impl FnMut(String) + 'static) -> Result<(), ClientEr
     let output_sink = Rc::new(RefCell::new(output_sink)) as Rc<RefCell<dyn FnMut(_)>>;
     let mut poll = mio::Poll::new().unwrap();
     let mut events = mio::Events::with_capacity(1024); //1mb
-    let url = "https://localhost:4433";
+    let url = "127.0.0.1:4433";
     let peer_addr = url.to_socket_addrs().unwrap().next().unwrap();
 
     let bind_addr = match peer_addr {
