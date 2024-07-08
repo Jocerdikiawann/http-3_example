@@ -1,0 +1,35 @@
+[package]
+name = "learn_h3_rust"
+version = "0.0.1"
+edition = "2021"
+
+[features]
+# Enable quiche's fuzzing mode.
+fuzzing = ["quiche/fuzzing"]
+
+# Enable qlog support.
+qlog = ["quiche/qlog"]
+
+# Use BoringSSL provided by the boring crate.
+boringssl-boring-crate = ["quiche/boringssl-boring-crate"]
+
+# Enable sfv support.
+sfv = ["quiche/sfv"]
+
+default = ["qlog", "sfv"]
+
+[dependencies]
+nix = { version = "0.29.0", features = ["net", "socket", "uio"] }
+docopt = "1.1.1"
+env_logger = "0.11.3"
+libc = "0.2.155"
+log = "0.4.21"
+mio = { version = "1.0.0", features = ["net", "os-poll"] }
+octets = "0.3.0"
+quiche = "0.21.0"
+ring = "0.17.8"
+url = "2.5.2"
+
+
+[lib]
+crate-type = ["lib"]
