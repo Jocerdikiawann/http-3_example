@@ -223,9 +223,21 @@ pub fn connect(output_sink: impl FnMut(String) + 'static) -> Result<(), ClientEr
 
         if (conn.is_established() || conn.is_in_early_data()) && !app_proto_selected {
             //TODO: u can send datagram here
-            http_conn =
-                HttpConn::with_conn(&mut conn, None, None, None, None, Rc::clone(&output_sink))
-                    .ok();
+
+            http_conn = Some(HttpConn::with_url(
+                &mut conn,
+                &vec![url::Url::parse(url).unwrap()],
+                1,
+                &vec![],
+                &None,
+                &"GET".to_string(),
+                false,
+                None,
+                None,
+                None,
+                None,
+                Rc::clone(&output_sink),
+            ));
 
             app_proto_selected = false;
         }
