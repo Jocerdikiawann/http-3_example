@@ -1,3 +1,5 @@
+#[macro_use]
+extern crate log;
 use std::{cell::RefCell, collections::HashMap, io, rc::Rc};
 
 use learn_h3_rust::{
@@ -8,6 +10,7 @@ use learn_h3_rust::{
 };
 use quiche::{ConnectionId, SendInfo};
 use ring::rand::SystemRandom;
+use std::convert::TryFrom;
 
 const MAX_BUF_SIZE: usize = 65507;
 const MAX_DATAGRAM_SIZE: usize = 1305;
@@ -16,6 +19,8 @@ pub type ClientIdMap = HashMap<ConnectionId<'static>, ClientId>;
 pub type ClientMap = HashMap<ClientId, Client>;
 
 fn main() {
+    env_logger::builder().format_timestamp_nanos().init();
+
     let mut buf = [0; MAX_BUF_SIZE];
     let mut out = [0; MAX_BUF_SIZE];
     let mut pacing = false;
@@ -29,12 +34,12 @@ fn main() {
     match set_txtime_sockopt(&socket) {
         Ok(_) => {
             pacing = true;
-            println!("successfully set SO_TXTTIME socket option");
+            debug!("successfully set SO_TXTTIME socket option");
         }
-        Err(e) => println!("setsockopt failed: {:?}", e),
+        Err(e) => debug!("setsockopt failed: {:?}", e),
     }
 
-    println!("Listening on {}", socket.local_addr().unwrap());
+    error!("Listening on {}", socket.local_addr().unwrap());
 
     poll.registry()
         .register(&mut socket, mio::Token(0), mio::Interest::READABLE)
@@ -42,7 +47,7 @@ fn main() {
 
     let max_datagram_size = MAX_DATAGRAM_SIZE;
     let enabale_gso = detect_gso(&socket, max_datagram_size);
-    println!("GSO detected: {}", enabale_gso);
+    trace!("GSO detected: {}", enabale_gso);
 
     let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
 
@@ -64,17 +69,18 @@ fn main() {
     config.set_max_recv_udp_payload_size(max_datagram_size);
     config.set_max_send_udp_payload_size(max_datagram_size);
     config.set_initial_max_data(10000000);
-    config.set_initial_max_stream_data_bidi_local(10000000);
-    config.set_initial_max_stream_data_bidi_remote(10000000);
-    config.set_initial_max_stream_data_uni(10000000);
+    config.set_initial_max_stream_data_bidi_local(1000000);
+    config.set_initial_max_stream_data_bidi_remote(1000000);
+    config.set_initial_max_stream_data_uni(1000000);
     config.set_initial_max_streams_bidi(100);
     config.set_initial_max_streams_uni(100);
     config.set_disable_active_migration(true);
     config.set_active_connection_id_limit(2);
     config.set_initial_congestion_window_packets(usize::try_from(10).unwrap());
 
-    config.set_max_connection_window(16777216);
-    config.set_max_stream_window(25165824);
+    config.set_max_connection_window(25165824);
+    config.set_max_stream_window(16777216);
+    config.enable_pacing(pacing);
 
     let mut keylog = None;
     if let Some(keylog_path) = std::env::var_os("SSLKEYLOGFILE") {
@@ -87,7 +93,8 @@ fn main() {
         config.log_keys();
     }
 
-    config.set_cc_algorithm_name(&"cubic".to_string()).unwrap();
+    config.set_cc_algorithm_name("cubic").unwrap();
+    config.enable_early_data();
 
     let rng = SystemRandom::new();
     let conn_id_seed = ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
@@ -108,7 +115,7 @@ fn main() {
 
         'read: loop {
             if events.is_empty() && !continue_write {
-                println!("timed out");
+                warn!("timed out");
 
                 clients.values_mut().for_each(|c| c.conn.on_timeout());
 
@@ -119,7 +126,7 @@ fn main() {
                 Ok(v) => v,
                 Err(e) => {
                     if e.kind() == std::io::ErrorKind::WouldBlock {
-                        println!("recv() would block");
+                        warn!("recv() would block");
                         break 'read;
                     }
 
@@ -127,19 +134,19 @@ fn main() {
                 }
             };
 
-            println!("got {} bytes", len);
+            info!("got {} bytes", len);
 
             let pkt_buf = &mut buf[..len];
 
             let hdr = match quiche::Header::from_slice(pkt_buf, quiche::MAX_CONN_ID_LEN) {
                 Ok(v) => v,
                 Err(e) => {
-                    println!("Parsing header failed: {:?}", e);
+                    error!("Parsing header failed: {:?}", e);
                     continue 'read;
                 }
             };
 
-            println!("got packet {:?}", hdr);
+            info!("got packet {:?}", hdr);
 
             let conn_id: ConnectionId<'static> = if !cfg!(feature = "fuzzing") {
                 let conn_id = ring::hmac::sign(&conn_id_seed, &hdr.dcid);
@@ -153,22 +160,22 @@ fn main() {
                 && !clients_ids.contains_key(&conn_id)
             {
                 if hdr.ty != quiche::Type::Initial {
-                    print!("packet is not initial");
+                    error!("packet is not initial");
                     continue 'read;
                 }
 
                 if !quiche::version_is_supported(hdr.version) {
-                    print!("Doing version negotiation");
+                    warn!("Doing version negotiation");
                     let len = quiche::negotiate_version(&hdr.scid, &hdr.dcid, &mut out).unwrap();
                     let out = &out[..len];
 
                     if let Err(e) = socket.send_to(out, from) {
                         if e.kind() == std::io::ErrorKind::WouldBlock {
-                            println!("send() would block");
+                            trace!("send() would block");
                             break;
                         }
 
-                        println!("send() failed: {:?}", e);
+                        panic!("send() failed: {:?}", e);
                     }
                     continue 'read;
                 }
@@ -187,8 +194,9 @@ fn main() {
                 //}
 
                 let scid = quiche::ConnectionId::from_vec(scid.to_vec());
-                println!("New connection: dcid={:?} scid={:?}", hdr.dcid, scid);
+                info!("New connection: dcid={:?} scid={:?}", hdr.dcid, scid);
 
+                error!("Local addr: {:?}\nfrom {}", local_addr, from);
                 #[allow(unused_mut)]
                 let mut conn =
                     quiche::accept(&scid, odcid.as_ref(), local_addr, from, &mut config).unwrap();
@@ -248,12 +256,12 @@ fn main() {
             let read = match client.conn.recv(pkt_buf, recv_info) {
                 Ok(v) => v,
                 Err(e) => {
-                    println!("{} recv failed: {:?}", client.conn.trace_id(), e);
+                    error!("{} recv failed: {:?}", client.conn.trace_id(), e);
                     continue 'read;
                 }
             };
 
-            println!("{} processed {} bytes", client.conn.trace_id(), read);
+            info!("{} processed {} bytes", client.conn.trace_id(), read);
 
             if client.conn.is_in_early_data() || client.conn.is_established() {
                 client.http3_conn = match HttpConn::with_conn(
@@ -266,7 +274,7 @@ fn main() {
                 ) {
                     Ok(v) => Some(v),
                     Err(e) => {
-                        println!("{} {}", client.conn.trace_id(), e);
+                        trace!("{} {}", client.conn.trace_id(), e);
                         None
                     }
                 };
@@ -299,7 +307,7 @@ fn main() {
             handle_path_events(client);
 
             while let Some(retired_scid) = client.conn.retired_scid_next() {
-                println!("Retiring sourc CID {:?}", retired_scid);
+                info!("Retiring sourc CID {:?}", retired_scid);
 
                 clients_ids.remove(&retired_scid);
             }
@@ -337,11 +345,11 @@ fn main() {
                     match client.conn.send(&mut out[total_write..max_send_burst]) {
                         Ok(v) => v,
                         Err(quiche::Error::Done) => {
-                            println!("{} done writing", client.conn.trace_id());
+                            trace!("{} done writing", client.conn.trace_id());
                             break;
                         }
                         Err(e) => {
-                            println!("{} send failed {:?}", client.conn.trace_id(), e);
+                            error!("{} send failed {:?}", client.conn.trace_id(), e);
 
                             client.conn.close(false, 0x1, b"fail").ok();
                             break;
@@ -370,17 +378,17 @@ fn main() {
                 enabale_gso,
             ) {
                 if e.kind() == std::io::ErrorKind::WouldBlock {
-                    println!("send() would block");
+                    trace!("send() would block");
                     break;
                 }
 
                 panic!("send_to() failed: {:?}", e);
             }
 
-            println!("{} written {} bytes", client.conn.trace_id(), total_write);
+            trace!("{} written {} bytes", client.conn.trace_id(), total_write);
 
             if total_write >= max_send_burst {
-                println!("{} pause writing", client.conn.trace_id());
+                trace!("{} pause writing", client.conn.trace_id());
                 continue_write = true;
                 break;
             }
@@ -388,10 +396,10 @@ fn main() {
 
         //Garbage collect closed connections
         clients.retain(|_, ref mut c| {
-            println!("Collecting garbage");
+            trace!("Collecting garbage");
 
             if c.conn.is_closed() {
-                println!(
+                info!(
                     "{} connection collected {:?} {:?}",
                     c.conn.trace_id(),
                     c.conn.stats(),
