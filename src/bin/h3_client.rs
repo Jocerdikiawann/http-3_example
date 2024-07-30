@@ -1,7 +1,7 @@
 use core::panic;
 use std::net::SocketAddr;
 
-use learn_h3_rust::quic::{make_quic_config, TypeQuic};
+use learn_h3_rust::quic::{handle_client_get_response, make_quic_config, TypeQuic};
 use log::{error, info, trace, warn};
 use quiche::h3::Connection;
 
@@ -99,22 +99,25 @@ fn main() {
         if quic_conn.is_established() {
             h3_conn =
                 Some(quiche::h3::Connection::with_transport(&mut quic_conn, &h3_config).unwrap());
+        }
 
-            if let Some(h_conn) = &mut h3_conn {
-                let req = vec![
-                    quiche::h3::Header::new(b":method", b"GET"),
-                    quiche::h3::Header::new(b":scheme", b"https"),
-                    quiche::h3::Header::new(b":authority", b"quiche.tech"),
-                    quiche::h3::Header::new(b":path", b"/"),
-                    quiche::h3::Header::new(b"user-agent", b"quiche"),
-                ];
+        //if we have a h3 connection, send requests and responses
+        if let Some(h_conn) = &mut h3_conn {
+            let req = vec![
+                quiche::h3::Header::new(b":method", b"GET"),
+                quiche::h3::Header::new(b":scheme", b"https"),
+                quiche::h3::Header::new(b":authority", b"quiche.tech"),
+                quiche::h3::Header::new(b":path", b"/"),
+                quiche::h3::Header::new(b"user-agent", b"quiche"),
+            ];
 
-                //Set fin false if you want send body()
-                let stream_id = h_conn.send_request(&mut quic_conn, &req, false).unwrap();
-                h_conn
-                    .send_body(&mut quic_conn, stream_id, b"hello body", true)
-                    .unwrap();
-            }
+            //Set fin false if you want send body()
+            let stream_id = h_conn.send_request(&mut quic_conn, &req, false).unwrap();
+            h_conn
+                .send_body(&mut quic_conn, stream_id, b"hello body", true)
+                .unwrap();
+
+            handle_client_get_response(h_conn, &mut quic_conn, &mut buf);
         }
     }
 }

@@ -1,7 +1,19 @@
-pub struct QuicConnection {}
+use quiche::h3::NameValue;
+
 pub enum TypeQuic {
     Server,
     Client,
+}
+
+pub fn hdrs_to_strings(hdrs: &[quiche::h3::Header]) -> Vec<(String, String)> {
+    hdrs.iter()
+        .map(|h| {
+            let name = String::from_utf8_lossy(h.name()).to_string();
+            let value = String::from_utf8_lossy(h.value()).to_string();
+
+            (name, value)
+        })
+        .collect()
 }
 
 pub fn make_quic_config(type_config: TypeQuic) -> quiche::Config {
@@ -39,4 +51,78 @@ pub fn make_quic_config(type_config: TypeQuic) -> quiche::Config {
     }
 
     config
+}
+
+pub fn handle_client_get_response(
+    http_conn: &mut quiche::h3::Connection,
+    quic_conn: &mut quiche::Connection,
+    buf: &mut [u8],
+) {
+    loop {
+        match http_conn.poll(quic_conn) {
+            Ok((stream_id, quiche::h3::Event::Headers { list, has_body })) => {
+                let status = list.iter().find(|h| h.name() == b":status").unwrap();
+                info!(
+                    "received {} response on stream {}",
+                    std::str::from_utf8(status.value()).unwrap(),
+                    stream_id
+                );
+            }
+            Ok((stream_id, quiche::h3::Event::Data)) => {
+                while let Ok(read) = http_conn.recv_body(quic_conn, stream_id, buf) {
+                    info!("Received {} bytes of payload on stream {}", read, stream_id);
+                }
+            }
+            Ok(_) => todo!(),
+            Err(quiche::h3::Error::Done) => {
+                break;
+            }
+            Err(e) => {
+                error!("http3 poll failed: {:?}", e);
+                break;
+            }
+        }
+    }
+}
+
+pub fn handle_server_send_responses(
+    http_conn: &mut quiche::h3::Connection,
+    quic_conn: &mut quiche::Connection,
+) {
+    loop {
+        match http_conn.poll(quic_conn) {
+            Ok((stream_id, quiche::h3::Event::Headers { list, .. })) => {
+                info!(
+                    "got response headers {:?} on stream {}",
+                    hdrs_to_strings(&list),
+                    stream_id
+                );
+
+                let mut headers = list.into_iter();
+                let method = headers.find(|h| h.name() == b":method").unwrap();
+                let path = headers.find(|h| h.name() == b":path").unwrap();
+
+                if method.value() == b"GET" && path.value() == b"/" {
+                    let resp = vec![
+                        quiche::h3::Header::new(b":status", b"200"),
+                        quiche::h3::Header::new(b"server", b"quiche"),
+                    ];
+                    http_conn
+                        .send_response(quic_conn, stream_id, &resp, false)
+                        .unwrap();
+                    http_conn
+                        .send_body(quic_conn, stream_id, b"Hello response", true)
+                        .unwrap();
+                }
+            }
+            Ok(_) => todo!(),
+            Err(quiche::h3::Error::Done) => {
+                break;
+            }
+            Err(e) => {
+                error!("http3 poll failed: {:?}", e);
+                break;
+            }
+        }
+    }
 }
