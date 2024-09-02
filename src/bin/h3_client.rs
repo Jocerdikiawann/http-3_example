@@ -43,6 +43,8 @@ fn main() {
         return;
     }
 
+    let app_data_start = std::time::Instant::now();
+
     loop {
         if !quic_conn.is_in_early_data() {
             poll.poll(&mut events, quic_conn.timeout()).unwrap();
@@ -53,7 +55,10 @@ fn main() {
         }
 
         for event in &events {
-            let socket = &socket;
+            let socket = match event.token() {
+                mio::Token(0) => &socket,
+                _ => unreachable!("unexpected token"),
+            };
             let local_addr = socket.local_addr().unwrap();
             'read: loop {
                 let (len, from) = match socket.recv_from(&mut buf) {
@@ -118,6 +123,14 @@ fn main() {
                 .unwrap();
 
             handle_client_get_response(h_conn, &mut quic_conn, &mut buf);
+        }
+
+        if quic_conn.is_closed() {
+            info!("{:?}, connection closed", quic_conn.stats());
+            if !quic_conn.is_established() {
+                error!("connection timed out after {:?}", app_data_start.elapsed())
+            }
+            break;
         }
     }
 }

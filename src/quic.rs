@@ -60,7 +60,7 @@ pub fn handle_client_get_response(
 ) {
     loop {
         match http_conn.poll(quic_conn) {
-            Ok((stream_id, quiche::h3::Event::Headers { list, has_body })) => {
+            Ok((stream_id, quiche::h3::Event::Headers { list, .. })) => {
                 let status = list.iter().find(|h| h.name() == b":status").unwrap();
                 info!(
                     "received {} response on stream {}",
