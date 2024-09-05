@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use quiche::h3::NameValue;
 
 use learn_h3_rust::quic::{make_quic_config, TypeQuic};
 use log::trace;
@@ -24,40 +24,19 @@ fn main() {
 
     let to = socket.local_addr().unwrap();
 
-
-    let quic_conn = quiche::accept(&SCID, None, to, from, &mut config).unwrap();
-    let h3_conn = quiche::h3::Connection::with_transport(quic_conn, h3_config).unwrap();
-
-    'h3_recv: loop {
-        match h3_conn.poll(&mut out) {
-            Ok((stream_id, quiche::h3::Event::Headers{list, has_body}) => {
-                trace!("got headers on stream {}", stream_id);
-                let mut header = list.into_iter();
-                
-                let method = header.find(|h| h.name() == ":method").unwrap().value();
-                let path = header.find(|h| h.name() == ":path").unwrap().value();
-
-                if method != "GET" && path.value() != "/" {
-                    let resp = vec![
-                        quiche::h3::Header::new(b":status", b"200"),
-                        quiche::h3::Header::new(b"server", b"quiche"),
-                    ];
-                    
-                    h3_conn.send_response(&mut conn, stream_id, &resp, true).unwrap();
-                    h3_conn.send_body(&mut conn, stream_id, b"Hello response", true).unwrap();
-                }
-            }
-
-
-        }
-    }
-
-
+    //infinite loop to keep the server running
     loop {
-        let (read, from) = match socket.recv_from(&mut buf).unwrap();
+        poll.poll(&mut events, None).unwrap();
+
+        let (read, from) = socket.recv_from(&mut buf).unwrap();
         let recv_info = quiche::RecvInfo { from, to };
 
-        let read = match quic_conn.recv(&mut buf[..read], recv_info) {
+        let mut quic_conn = quiche::accept(&SCID, None, to, from, &mut config).unwrap();
+        let mut h3_conn =
+            quiche::h3::Connection::with_transport(&mut quic_conn, &h3_config).unwrap();
+
+        //Receive quic packet
+        match quic_conn.recv(&mut buf[..read], recv_info) {
             Ok(v) => v,
             Err(quiche::Error::Done) => {
                 trace!("Done reading");
@@ -69,7 +48,45 @@ fn main() {
             }
         };
 
+        if quic_conn.is_established() {
+            loop {
+                match h3_conn.poll(&mut quic_conn) {
+                    Ok((stream_id, quiche::h3::Event::Headers { list, has_body })) => {
+                        trace!("got request headers {:?} has body {} ", list, has_body);
+                        let mut headers = list.into_iter();
+                        let method = headers.find(|h| h.name() == b":method").unwrap();
+                        let path = headers.find(|h| h.name() == b":path").unwrap();
+
+                        if method.value() == b"GET" && path.value() == b"/" {
+                            let resp_headers = vec![
+                                quiche::h3::Header::new(b":status", b"200"),
+                                quiche::h3::Header::new(b"server", b"quiche"),
+                            ];
+
+                            h3_conn
+                                .send_response(&mut quic_conn, stream_id, &resp_headers, false)
+                                .unwrap();
+
+                            h3_conn
+                                .send_body(&mut quic_conn, stream_id, b"hello from server", true)
+                                .unwrap();
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(quiche::h3::Error::Done) => {
+                        trace!("Done reading");
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("h3_conn.poll failed: {:?}", e);
+                        return;
+                    }
+                }
+            }
+        }
+
+        while let Ok((write, send_info)) = quic_conn.send(&mut out) {
+            socket.send_to(&out[..write], send_info.to).unwrap();
+        }
     }
-
-
 }
